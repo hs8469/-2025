@@ -4,9 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'login.dart';
 
 void main() {
   runApp(MyApp2());
@@ -169,30 +166,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final searchCtrl = TextEditingController();
 
-  String? _userName;
-  String? _userRole; // role 추가
-  final _auth = FirebaseAuth.instance;
-  final _firestore = FirebaseFirestore.instance;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadUserInfo();
-  }
-
-  Future<void> _loadUserInfo() async {
-    final user = _auth.currentUser;
-    if (user != null) {
-      final doc = await _firestore.collection('users').doc(user.uid).get();
-      final data = doc.data();
-      setState(() {
-        _userName = data?['name'] ?? '사용자';
-        _userRole = data?['role'] ?? '회원'; // 기본값은 '회원'
-      });
-      print('사용자 이름: $_userName, 등급: $_userRole');
-    }
-  }
-
   void openAddClub() async {
     final newClub = await showDialog<Club>(
       context: context,
@@ -306,57 +279,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 onPressed: openAddClub,
                 child: Text('동아리 추가'),
               ),
-              SizedBox(width: 12),
-
-              // 👇 로그인 정보 버튼 추가
-              TextButton(
-                onPressed: () {
-                  showDialog(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: Text('로그인 정보'),
-                      content: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('이름: ${_userName ?? ''}'),
-                          Text('등급: ${_userRole ?? ''}'),
-                          SizedBox(height: 16),
-                          ElevatedButton.icon(
-                            onPressed: () async {
-                              await _auth.signOut();
-                              Navigator.pushAndRemoveUntil(
-                                context,
-                                MaterialPageRoute(builder: (context) => LoginPage()),
-                                    (route) => false,
-                              );
-                            },
-                            icon: Icon(Icons.logout),
-                            label: Text('로그아웃'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.red,
-                            ),
-                          ),
-                        ],
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: Text('닫기'),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-                child: Text(
-                  _userName ?? '',
-                  style: TextStyle(color: Colors.black, fontSize: 16),
-                ),
-              ),
             ],
           ),
-          ),
         ),
+      ),
       body: Row(
         children: [
           Container(
@@ -542,6 +468,7 @@ class _AddClubDialogState extends State<AddClubDialog> {
   String? descError;
   String? detailError;
   String? mainImageError;
+  String? detailImagesError;
 
   Future<void> pickMainImage() async {
     final picker = ImagePicker();
@@ -551,6 +478,12 @@ class _AddClubDialogState extends State<AddClubDialog> {
     );
     if (file != null) {
       final bytes = await file.readAsBytes();
+      if (bytes.length > 5 * 1024 * 1024) {
+        setState(() {
+          mainImageError = "이미지 크기는 5MB 이하만 가능합니다.";
+        });
+        return;
+      }
       setState(() {
         mainImage = base64Encode(bytes);
         mainImageError = null;
@@ -562,10 +495,30 @@ class _AddClubDialogState extends State<AddClubDialog> {
     final picker = ImagePicker();
     final files = await picker.pickMultiImage(imageQuality: 70);
     if (files != null) {
+      int remain = 4 - detailImages.length;
+      if (remain <= 0) {
+        setState(() {
+          detailImagesError = "상세 이미지는 최대 4장까지 등록할 수 있습니다.";
+        });
+        return;
+      }
+      List<String> newImages = [];
+      String? errorMsg;
+      for (var f in files.take(remain)) {
+        final bytes = await f.readAsBytes();
+        if (bytes.length > 5 * 1024 * 1024) {
+          errorMsg = "각 이미지 크기는 5MB 이하만 가능합니다.";
+          continue;
+        }
+        newImages.add(base64Encode(bytes));
+      }
       setState(() {
-        detailImages.addAll(
-          files.map((f) => base64Encode(File(f.path).readAsBytesSync())),
-        );
+        if (newImages.isEmpty) {
+          detailImagesError = errorMsg ?? "추가할 수 있는 이미지가 없습니다.";
+        } else {
+          detailImages.addAll(newImages);
+          detailImagesError = null;
+        }
       });
     }
   }
@@ -595,12 +548,18 @@ class _AddClubDialogState extends State<AddClubDialog> {
           : (descCtrl.text.trim().length > 50 ? "50자 이내로 입력하세요" : null);
       detailError = detailCtrl.text.trim().isEmpty ? "상세 설명을 입력하세요" : null;
       mainImageError = mainImage == null ? "대표사진을 선택하세요" : null;
+      detailImagesError = null;
     });
     if (nameError != null ||
         descError != null ||
         detailError != null ||
-        mainImageError != null)
+        mainImageError != null ||
+        detailImages.length > 4) {
+      if (detailImages.length > 4) {
+        detailImagesError = "상세 이미지는 최대 4장까지 등록할 수 있습니다.";
+      }
       return;
+    }
 
     final club = Club(
       name: nameCtrl.text.trim(),
@@ -724,6 +683,14 @@ class _AddClubDialogState extends State<AddClubDialog> {
                     style: TextStyle(fontSize: 12),
                   )
                       : SizedBox(),
+                  if (detailImagesError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8.0),
+                      child: Text(
+                        detailImagesError!,
+                        style: TextStyle(color: Colors.red, fontSize: 12),
+                      ),
+                    ),
                 ],
               ),
               if (detailImages.isNotEmpty)
